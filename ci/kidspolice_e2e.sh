@@ -283,11 +283,6 @@ sleep 1
 # ETAPA 7: ESCENARIOS PASO 2 Y FILTROS
 # ==============================================================================
 log "=== ETAPA 7: PASO 2 ESCENARIOS Y FILTROS ==="
-adb shell input swipe $((SW / 2)) $((SH * 75 / 100)) $((SW / 2)) $((SH * 32 / 100)) 450
-sleep 2
-shot 09_home_scenarios
-dump_ui ui_09_home_scenarios
-
 tap_rx "Felicitar|Praise" || true
 sleep 1
 shot 09b_filter_positive
@@ -295,6 +290,10 @@ tap_rx "Corregir|Guide" || true
 sleep 1
 tap_rx "Todos|All" || true
 sleep 1
+adb shell input swipe $((SW / 2)) $((SH * 70 / 100)) $((SW / 2)) $((SH * 45 / 100)) 450
+sleep 2
+shot 09_home_scenarios
+dump_ui ui_09_home_scenarios
 
 # ==============================================================================
 # ETAPA 8: PRE-CALL SHEET + TEMPORIZADOR 5 SEGUNDOS + DISPARO AUTOMÁTICO
@@ -484,8 +483,10 @@ close_ad_if_open
 # ETAPA 13: PRUEBA MULTIIDIOMA (INGLÉS + ÁRABE)
 # ==============================================================================
 log "=== ETAPA 13: PRUEBA MULTIIDIOMA EN Y AR ==="
-adb shell input swipe $((SW / 2)) $((SH * 30 / 100)) $((SW / 2)) $((SH * 85 / 100)) 400
+adb shell input swipe $((SW / 2)) $((SH * 28 / 100)) $((SW / 2)) $((SH * 88 / 100)) 350
 sleep 1
+adb shell input swipe $((SW / 2)) $((SH * 28 / 100)) $((SW / 2)) $((SH * 88 / 100)) 350
+sleep 2
 tap_rx "Ajustes|Settings"
 sleep 2
 tap_rx "English" || true
