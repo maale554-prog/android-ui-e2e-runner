@@ -59,10 +59,15 @@ def iter_nodes(xml_path: str):
 
 def cmd_tap(xml_path: str, pattern: str, nth: int = 0):
     rx = re.compile(pattern, re.I)
-    matches = []
+    clickable_matches = []
+    other_matches = []
     for n in iter_nodes(xml_path):
         if n["combined"] and rx.search(n["combined"]):
-            matches.append(n)
+            if n["clickable"]:
+                clickable_matches.append(n)
+            else:
+                other_matches.append(n)
+    matches = clickable_matches if clickable_matches else other_matches
     if len(matches) > nth:
         m = matches[nth]
         lbl = re.sub(r"\s+", "_", m["combined"])[:42]

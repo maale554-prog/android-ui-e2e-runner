@@ -17,7 +17,7 @@ res() { echo "$1=$2" | tee -a "$OUT/result.env"; }
 dump_ui() {
   local name="$1"
   rm -f /tmp/ui_pull.xml
-  adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || adb shell uiautomator dump --compressed /sdcard/ui.xml >/dev/null 2>&1 || true
+  adb shell uiautomator dump --compressed /sdcard/ui.xml >/dev/null 2>&1 || adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || true
   adb pull /sdcard/ui.xml "$OUT/${name}.xml" >/dev/null 2>&1 || true
 }
 
@@ -304,7 +304,9 @@ sleep 2
 shot 10_precall_sheet
 dump_ui ui_10_precall_sheet
 
-# Elegir nombre Mateo y temporizador En 5 seg
+# Elegir modo Manual (A mi ritmo), nombre Mateo y temporizador En 5 seg
+tap_rx "Manual" || true
+sleep 1
 if ! has_rx "(^|, | )Mateo$"; then
   adb shell input swipe $((SW / 2)) $((SH * 78 / 100)) $((SW / 2)) $((SH * 40 / 100)) 350
   sleep 1
@@ -357,17 +359,20 @@ dump_ui ui_13_active_voice_officer
 HANGUP_PT=$(python3 ci/kidspolice_audit.py hangup_xy "$OUT/ui_13_active_voice_officer.xml" "$SW" "$SH")
 log "Coordenada boton Colgar detectada: $HANGUP_PT"
 
-# Esperar fin del saludo inicial (~10s) para verificar turno verde HABLA TU AHORA
-for _ in 1 2 3 4 5 6; do
-  if has_rx "HABLA TÚ AHORA|SPEAK OUT LOUD|Responder ya"; then
+# Esperar fin del saludo inicial (~11s) para verificar turno verde HABLA TU AHORA (en modo Manual espera sin prisa)
+sleep 11
+for _ in 1 2 3; do
+  dump_ui ui_14_active_voice_parent_turn
+  if python3 ci/kidspolice_audit.py tap "$OUT/ui_14_active_voice_parent_turn.xml" "HABLA TÚ AHORA|SPEAK OUT LOUD|Responder ahora" | grep -q "[0-9]"; then
     break
   fi
-  sleep 2
+  sleep 3
 done
 shot 14_active_voice_parent_turn
-dump_ui ui_14_active_voice_parent_turn
-if has_rx "HABLA TÚ AHORA|SPEAK OUT LOUD|Responder ya"; then
+if python3 ci/kidspolice_audit.py tap "$OUT/ui_14_active_voice_parent_turn.xml" "HABLA TÚ AHORA|SPEAK OUT LOUD|Responder ahora" | grep -q "[0-9]"; then
   res turno_verde_padre OK
+  tap_rx "Responder ahora|Next Response" || true
+  sleep 2
 else
   res turno_verde_padre NO_VISTO
 fi
@@ -377,7 +382,7 @@ tap_rx "Frases extra|Quick Lines" || true
 sleep 2
 shot 15_soundboard_open
 dump_ui ui_15_soundboard_open
-if has_rx "Estrella de Oro|Gold Star"; then
+if python3 ci/kidspolice_audit.py tap "$OUT/ui_15_soundboard_open.xml" "Estrella de Oro|Gold Star|Te escucho" | grep -q "[0-9]"; then
   res frases_extra OK
   tap_rx "Estrella de Oro|Gold Star" || true
   sleep 2
@@ -424,13 +429,15 @@ close_ad_if_open
 # ETAPA 12: VIDEOLLAMADA HD REAL (OFICIAL MARCO + DRA. ELENA CON PRUEBA DE MOVIMIENTO)
 # ==============================================================================
 log "=== ETAPA 12A: VIDEOLLAMADA HD OFICIAL MARCO ==="
-if ! has_rx "Videollamada$|Video Call$"; then
-  adb shell input swipe $((SW / 2)) $((SH * 75 / 100)) $((SW / 2)) $((SH * 35 / 100)) 400
+if ! has_rx "(^|, | )Videollamada$|(^|, | )Video Call$"; then
+  adb shell input swipe $((SW / 2)) $((SH * 75 / 100)) $((SW / 2)) $((SH * 40 / 100)) 400
   sleep 2
 fi
-tap_rx "Videollamada$|Video Call$" 0
+tap_rx "(^|, | )Videollamada$|(^|, | )Video Call$" 0
 sleep 2
 tap_rx "Oficial Marco|Officer Marcus" || true
+sleep 1
+tap_rx "Automático|Auto" || true
 sleep 1
 tap_rx "Ahora mismo|Right now" || true
 sleep 1
@@ -438,7 +445,7 @@ tap_rx "Iniciar Videollamada|Start Real HD Video"
 sleep 3
 shot 18_incoming_video_police
 tap_rx "Contestar|Answer"
-sleep 4
+sleep 5
 shot 18a_video_police_f1
 sleep 2
 shot 18b_video_police_f2
@@ -454,18 +461,18 @@ sleep 3
 close_ad_if_open
 
 log "=== ETAPA 12B: VIDEOLLAMADA HD DRA. ELENA ==="
-if ! has_rx "Videollamada$|Video Call$"; then
-  adb shell input swipe $((SW / 2)) $((SH * 75 / 100)) $((SW / 2)) $((SH * 35 / 100)) 400
+if ! has_rx "(^|, | )Videollamada$|(^|, | )Video Call$"; then
+  adb shell input swipe $((SW / 2)) $((SH * 75 / 100)) $((SW / 2)) $((SH * 40 / 100)) 400
   sleep 2
 fi
-tap_rx "Videollamada$|Video Call$" 0
+tap_rx "(^|, | )Videollamada$|(^|, | )Video Call$" 0
 sleep 2
 tap_rx "Dra\. Elena|Dr\. Elena" || true
 sleep 1
 tap_rx "Iniciar Videollamada|Start Real HD Video"
 sleep 3
 tap_rx "Contestar|Answer"
-sleep 4
+sleep 5
 shot 19a_video_doctor_f1
 sleep 2
 shot 19b_video_doctor_f2
