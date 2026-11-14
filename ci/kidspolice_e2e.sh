@@ -397,7 +397,7 @@ else
   res explicacion_nombre_nino FALLA
 fi
 
-tap_rx "Mateo" || true
+tap_rx "🔊 Mateo|🔊 Liam" || true
 sleep 1
 if ! has_rx "En 5 seg|In 5 sec"; then
   adb shell input swipe $((SW / 2)) $((SH * 78 / 100)) $((SW / 2)) $((SH * 38 / 100)) 350
@@ -415,7 +415,7 @@ sleep 1
 shot 11_timer_countdown_banner
 dump_ui ui_11_timer_countdown_banner
 
-sleep 5
+sleep 6
 
 # ==============================================================================
 # ETAPA 9: PANTALLA DE LLAMADA ENTRANTE ("📞 Llamada para: Mateo")
@@ -423,7 +423,7 @@ sleep 5
 log "=== ETAPA 9: LLAMADA ENTRANTE ==="
 shot 12_incoming_voice
 dump_ui ui_12_incoming_voice
-if has_rx "Contestar|Answer"; then
+if has_rx "(^|, | )Contestar$|(^|, | )Answer$"; then
   res llamada_entrante_temporizada OK
 else
   log "Abriendo llamada directa de respaldo..."
@@ -443,7 +443,7 @@ else
   res llamada_para_mateo WARN
 fi
 
-tap_rx "Contestar|Answer"
+tap_rx "(^|, | )Contestar$|(^|, | )Answer$"
 sleep 3
 
 # ==============================================================================
@@ -547,7 +547,7 @@ sleep 1
 tap_rx "Iniciar Videollamada|Start Video Call"
 sleep 3
 shot 18_incoming_video_police
-tap_rx "Contestar|Answer"
+tap_rx "(^|, | )Contestar$|(^|, | )Answer$"
 sleep 5
 shot 18a_video_police_f1
 sleep 2
@@ -579,7 +579,7 @@ fi
 sleep 1
 tap_rx "Iniciar Videollamada|Start Video Call"
 sleep 3
-tap_rx "Contestar|Answer"
+tap_rx "(^|, | )Contestar$|(^|, | )Answer$"
 sleep 5
 shot 19a_video_doctor_f1
 sleep 2
