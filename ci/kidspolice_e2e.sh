@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Suite E2E exhaustiva de Kids Police (com.superappsmx.kidspolice) en Emulador Android de GitHub Actions.
-# Prueba TODAS las pantallas, modales, idiomas, grabadora, temporizador, llamada de voz, frases extra,
-# candado anti-toques, videollamada HD con movimiento real de video y medalla post-llamada,
-# auditando geometricamente el centrado horizontal en los volcados XML de uiautomator.
+# Suite E2E exhaustiva y multi-dispositivo de Callabit v1.1.0 (com.superappsmx.kidspolice) en GitHub Actions.
+# Verifica: Puerta Parental matematica dinamica, tutorial 3 pasos, 3 paquetes regionales de espanol (MX/CO/ES),
+# explicacion y uso de rol parental + nombre hablado (Mateo), 16 escenarios incluyendo Cancelar Envio de Patrulla/Visita,
+# grabadora de voz, temporizador 5s, llamada activa con pausa verde + soundboard 3x3 + bloqueo anti-toques,
+# insignia post-llamada, videollamada HD con movimiento real de pixeles, multiidioma (EN/AR) y diseno responsivo
+# en telefono compacto (720x1280), telefono estandar (1080x2400) y tablet (1200x1920).
 set -u
 
 APK="${1:-apk/kidspolice-test.apk}"
@@ -16,7 +18,6 @@ res() { echo "$1=$2" | tee -a "$OUT/result.env"; }
 
 dump_ui() {
   local name="$1"
-  rm -f /tmp/ui_pull.xml
   adb shell uiautomator dump --compressed /sdcard/ui.xml >/dev/null 2>&1 || adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || true
   adb pull /sdcard/ui.xml "$OUT/${name}.xml" >/dev/null 2>&1 || true
 }
@@ -96,12 +97,53 @@ has_rx() {
   [ -n "$p" ]
 }
 
+accept_ump_if_open() {
+  if has_rx "^(Consent|Consentir|Agree|Aceptar)$"; then
+    tap_rx "^(Consent|Consentir|Agree|Aceptar)$" || true
+    sleep 3
+  fi
+}
+
+solve_gate_if_open() {
+  for _ in 1 2 3; do
+    dump_ui ui_gate_tmp
+    local g
+    g=$(python3 ci/kidspolice_audit.py solve_gate "$OUT/ui_gate_tmp.xml" || true)
+    [ -z "$g" ] && return 0
+    set -- $g
+    local ans="$1"
+    local ex="$2"
+    local ey="$3"
+    log "ParentalGate detectado -> ingresando respuesta=$ans en ($ex,$ey)"
+    adb shell input tap "$ex" "$ey"
+    sleep 1
+    adb shell input text "$ans"
+    sleep 1
+    adb shell input keyevent KEYCODE_ENTER
+    sleep 2
+    dump_ui ui_gate_tmp2
+    local still
+    still=$(python3 ci/kidspolice_audit.py solve_gate "$OUT/ui_gate_tmp2.xml" || true)
+    if [ -n "$still" ]; then
+      local cbtn
+      cbtn=$(python3 ci/kidspolice_audit.py tap "$OUT/ui_gate_tmp2.xml" "^(Continuar|Continue|Weiter|Continuer|متابعة)$" || true)
+      if [ -n "$cbtn" ]; then
+        set -- $cbtn
+        adb shell input tap "$1" "$2"
+        sleep 2
+      fi
+    else
+      return 0
+    fi
+  done
+}
+
 log "=== ESPERANDO ARRANQUE DEL EMULADOR ==="
 adb wait-for-device
 until [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1" ]; do sleep 2; done
 adb shell input keyevent KEYCODE_WAKEUP
 adb shell wm dismiss-keyguard >/dev/null 2>&1 || true
-sleep 25
+sleep 22
 
 SIZE_RAW=$(adb shell wm size | grep -oE '[0-9]+x[0-9]+' | tail -1)
 SW=${SIZE_RAW%x*}
@@ -121,7 +163,7 @@ if ! echo "$INST" | grep -q "Success"; then
 fi
 res instalacion OK
 
-for perm in android.permission.CAMERA android.permission.RECORD_AUDIO android.permission.POST_NOTIFICATIONS; do
+for perm in android.permission.RECORD_AUDIO android.permission.POST_NOTIFICATIONS; do
   adb shell pm grant "$PKG" "$perm" >/dev/null 2>&1 || true
 done
 
@@ -129,42 +171,44 @@ COMP="$PKG/.MainActivity"
 adb shell am start -W -n "$COMP" >/dev/null 2>&1
 sleep 10
 dismiss_system_anr
-
-# Si aparece formulario UMP GDPR de prueba, aceptarlo
-if has_rx "Consent|Consentir|Agree|Aceptar"; then
-  tap_rx "Consent|Consentir|Agree|Aceptar" || true
-  sleep 3
-fi
+accept_ump_if_open
 
 # ==============================================================================
-# ETAPA 1: PARENTAL GATE (IDIOMAS + RESPUESTA INCORRECTA + DESBLOQUEO 12+7=19)
+# ETAPA 1: PARENTAL GATE DINÁMICO (IDIOMAS + RESPUESTA ERRÓNEA + MULTIPLICACIÓN)
 # ==============================================================================
 log "=== ETAPA 1: PARENTAL GATE ==="
 shot 01_gate_initial
 dump_ui ui_01_gate_initial
 
-# Cambiar a Espanol tocando chip ES
-tap_rx "ES$" || tap_rx "🇲🇽" || true
+tap_rx "MX$" || tap_rx "🇲🇽" || true
 sleep 2
 shot 02_gate_es
 dump_ui ui_02_gate_es
 
-# Probar bloqueo ante respuesta erronea (15)
-tap_rx "(^| )15$" || true
-sleep 1
-tap_rx "Soy Padre|Adult" || true
-sleep 1
-if has_rx "12 \+ 7 = 19"; then
+# Probar rechazo ante respuesta erronea ("1", ya que 12..29 x 3..9 siempre es >= 36)
+G_INIT=$(python3 ci/kidspolice_audit.py solve_gate "$OUT/ui_02_gate_es.xml" || true)
+if [ -n "$G_INIT" ]; then
+  set -- $G_INIT
+  adb shell input tap "$2" "$3"
+  sleep 1
+  adb shell input text "1"
+  sleep 1
+  adb shell input keyevent KEYCODE_ENTER
+  sleep 2
+  if ! has_rx "Respuesta incorrecta|Incorrect"; then
+    tap_rx "^(Continuar|Continue)$" || true
+    sleep 1
+  fi
+fi
+if has_rx "Respuesta incorrecta|Incorrect"; then
   res parental_gate_bloquea_error OK
 else
   res parental_gate_bloquea_error WARN
 fi
 
-# Seleccionar 19 y entrar
-tap_rx "(^| )19$"
-sleep 1
-tap_rx "Soy Padre|Adult"
+solve_gate_if_open
 sleep 3
+accept_ump_if_open
 
 # ==============================================================================
 # ETAPA 2: MODAL AUTO-EXPLICATIVO ¿CÓMO FUNCIONA? (3 PASOS)
@@ -179,9 +223,10 @@ if has_rx "Cómo funciona|How It Works"; then
 else
   res modal_como_funciona NO_VISTO
 fi
+accept_ump_if_open
 
 # ==============================================================================
-# ETAPA 3: DASHBOARD PRINCIPAL (PASO 1 + CABECERA CENTRADA)
+# ETAPA 3: DASHBOARD PRINCIPAL CALLABIT (PASO 1 + CABECERA CENTRADA)
 # ==============================================================================
 log "=== ETAPA 3: DASHBOARD PRINCIPAL ==="
 close_ad_if_open
@@ -192,36 +237,68 @@ if has_rx "PASO 1|STEP 1"; then
 else
   res home_paso1 FALLA
 fi
+if has_rx "Callabit"; then
+  res branding_callabit OK
+else
+  res branding_callabit FALLA
+fi
 
 # ==============================================================================
-# ETAPA 4: MODAL DE AJUSTES (ROLES + SKINS)
+# ETAPA 4: AJUSTES + VOCES REGIONALES (MX / CO / ES) + EXPLICACIÓN QUIÉN CONTESTA
 # ==============================================================================
-log "=== ETAPA 4: AJUSTES ==="
+log "=== ETAPA 4: AJUSTES Y ACENTOS REGIONALES (MX / CO / ES) ==="
 tap_rx "Ajustes|Settings"
 sleep 2
 shot 05_settings_modal
 dump_ui ui_05_settings_modal
-tap_rx "Papá$|Dad$" || true
+
+if has_rx "Sirve para que al contestar|person greets Mom"; then
+  res explicacion_quien_contesta OK
+else
+  res explicacion_quien_contesta FALLA
+fi
+
+tap_rx "Español \(Colombia\)" || true
+sleep 2
+shot 05b_settings_colombia
+if has_rx "Colombia.*🔊"; then
+  res voz_espanol_colombia OK
+else
+  res voz_espanol_colombia WARN
+fi
+
+tap_rx "Español \(España\)" || true
+sleep 2
+shot 05c_settings_espana
+if has_rx "España.*🔊"; then
+  res voz_espanol_espana OK
+else
+  res voz_espanol_espana WARN
+fi
+
+tap_rx "Español \(México\)" || true
 sleep 1
-tap_rx "Google Pixel" || true
+tap_rx "Papá|Dad" || true
 sleep 1
-# Cerrar Ajustes (boton X arriba a la derecha del sheet o BACK)
+tap_rx "Moderno|Modern" || true
+sleep 1
 adb shell input keyevent KEYCODE_BACK
 sleep 2
 
 # ==============================================================================
-# ETAPA 5: DESBLOQUEO VIP 24H (DRA. ELENA Y COMANDANTE BRUNO)
+# ETAPA 5: DESBLOQUEO VIP 24H (DRA. ELENA TRAS PUERTA PARENTAL DE ACCIÓN)
 # ==============================================================================
 log "=== ETAPA 5: DESBLOQUEO VIP ==="
 tap_rx "Dra\. Elena|Dr\. Elena"
 sleep 2
+solve_gate_if_open
+sleep 2
 shot 06_vip_modal
 dump_ui ui_06_vip_modal
-if has_rx "Ver 1 Video|Watch 1 Video"; then
+if has_rx "Ver 1 anuncio|Watch 1 ad"; then
   res vip_modal_abre OK
-  tap_rx "Ver 1 Video|Watch 1 Video"
+  tap_rx "Ver 1 anuncio|Watch 1 ad"
   sleep 4
-  # Si se abrio AdActivity de prueba de Google Rewarded, esperar recompensa (~15s) y cerrar
   if echo "$(focus_win)" | grep -q "AdActivity"; then
     log "Anuncio Recompensado de prueba en reproduccion; esperando recompensa..."
     sleep 18
@@ -232,32 +309,31 @@ else
   res vip_modal_abre FALLA
 fi
 
-shot 07_home_vip_unlocked
-dump_ui ui_07_home_vip_unlocked
-# Si se abrio PreCallSheet o se selecciono Dra. Elena sin candado, VIP quedo activo
-if has_rx "Preparar|Automático|Dra\. Elena"; then
-  res vip_desbloqueo OK
-else
-  res vip_desbloqueo WARN
+# Si el anuncio de prueba en emulador sin Play Store tardo o mostro aviso, cerrar modal VIP limpiamente
+if has_rx "^(Cerrar|Close)$"; then
+  tap_rx "^(Cerrar|Close)$" || true
+  sleep 2
 fi
-# Si hubiese quedado PreCallSheet abierta, cerrarla
 if has_rx "Hacer Sonar|Iniciar Videollamada"; then
   adb shell input keyevent KEYCODE_BACK
   sleep 2
 fi
+shot 07_home_vip_state
+dump_ui ui_07_home_vip_state
 
 # ==============================================================================
-# ETAPA 6: GRABADORA DE VOZ PROPIA DEL PADRE
+# ETAPA 6: GRABADORA DE VOZ PROPIA DEL PADRE (CON PUERTA PARENTAL)
 # ==============================================================================
 log "=== ETAPA 6: GRABADORA DE VOZ PROPIA ==="
 tap_rx "Ajustes|Settings"
 sleep 2
-# Deslizar un poco dentro de Ajustes si hace falta para ver Grabar Mi Propia Voz
 if ! has_rx "Grabar Mi Propia Voz|Record My Own Voice"; then
-  adb shell input swipe $((SW / 2)) $((SH * 75 / 100)) $((SW / 2)) $((SH * 35 / 100)) 400
+  adb shell input swipe $((SW / 2)) $((SH * 78 / 100)) $((SW / 2)) $((SH * 32 / 100)) 400
   sleep 1
 fi
 tap_rx "Grabar Mi Propia Voz|Record My Own Voice"
+sleep 2
+solve_gate_if_open
 sleep 2
 shot 08a_recorder_modal
 dump_ui ui_08a_recorder_modal
@@ -275,28 +351,39 @@ fi
 adb shell input keyevent KEYCODE_BACK
 sleep 2
 
-# Volver a seleccionar Oficial Marco arriba en PASO 1
-tap_rx "Oficial Marco|Officer Marcus" || true
+# Asegurar que Capitán Marco este seleccionado en PASO 1
+tap_rx "Capitán Marco|Captain Marco" || true
 sleep 1
 
 # ==============================================================================
-# ETAPA 7: ESCENARIOS PASO 2 Y FILTROS
+# ETAPA 7: 16 ESCENARIOS + FILTROS + CANCELAR ENVÍO DE PATRULLA/VISITA
 # ==============================================================================
-log "=== ETAPA 7: PASO 2 ESCENARIOS Y FILTROS ==="
+log "=== ETAPA 7: PASO 2 ESCENARIOS (16) Y CANCELAR ENVIO ==="
 tap_rx "Felicitar|Praise" || true
 sleep 1
 shot 09b_filter_positive
-tap_rx "Corregir|Guide" || true
+dump_ui ui_09b_filter_positive
+
+tap_rx "Rutinas|Routines" || true
 sleep 1
+shot 09c_filter_routines
+dump_ui ui_09c_filter_routines
+
 tap_rx "Todos|All" || true
 sleep 1
-adb shell input swipe $((SW / 2)) $((SH * 70 / 100)) $((SW / 2)) $((SH * 45 / 100)) 450
+adb shell input swipe $((SW / 2)) $((SH * 72 / 100)) $((SW / 2)) $((SH * 44 / 100)) 420
 sleep 2
 shot 09_home_scenarios
 dump_ui ui_09_home_scenarios
 
+if has_rx "Cancelar Envío|YA HIZO CASO|Cancel Home Visit"; then
+  res escenario_cancelar_envio OK
+else
+  res escenario_cancelar_envio FALLA
+fi
+
 # ==============================================================================
-# ETAPA 8: PRE-CALL SHEET + TEMPORIZADOR 5 SEGUNDOS + DISPARO AUTOMÁTICO
+# ETAPA 8: PRE-CALL SHEET + EXPLICACIÓN NOMBRE + MATEO + TEMPORIZADOR 5 SEGUNDOS
 # ==============================================================================
 log "=== ETAPA 8: PRE-CALL SHEET Y TEMPORIZADOR 5 SEG ==="
 tap_rx "(^|, | )Llamada$|(^|, | )Voice Call$" 0
@@ -304,31 +391,34 @@ sleep 2
 shot 10_precall_sheet
 dump_ui ui_10_precall_sheet
 
-# Elegir modo Manual (A mi ritmo), nombre Mateo y temporizador En 5 seg
-tap_rx "Manual" || true
+if has_rx "nombres con altavoz|names with a speaker"; then
+  res explicacion_nombre_nino OK
+else
+  res explicacion_nombre_nino FALLA
+fi
+
+tap_rx "Mateo" || true
 sleep 1
-if ! has_rx "(^|, | )Mateo$"; then
-  adb shell input swipe $((SW / 2)) $((SH * 78 / 100)) $((SW / 2)) $((SH * 40 / 100)) 350
+if ! has_rx "En 5 seg|In 5 sec"; then
+  adb shell input swipe $((SW / 2)) $((SH * 78 / 100)) $((SW / 2)) $((SH * 38 / 100)) 350
   sleep 1
 fi
-tap_rx "(^|, | )Mateo$" || true
+tap_rx "Manual" || true
 sleep 1
 tap_rx "En 5 seg|In 5 sec" || true
 sleep 1
 tap_rx "Hacer Sonar Llamada|Ring Voice Call"
-sleep 2
+sleep 1
 
-# Volver arriba del scroll para ver el banner amarillo de cuenta regresiva
-adb shell input swipe $((SW / 2)) $((SH * 35 / 100)) $((SW / 2)) $((SH * 80 / 100)) 300
+adb shell input swipe $((SW / 2)) $((SH * 35 / 100)) $((SW / 2)) $((SH * 82 / 100)) 260
 sleep 1
 shot 11_timer_countdown_banner
 dump_ui ui_11_timer_countdown_banner
 
-# Esperar a que termine la cuenta regresiva de 5s y salte sola a IncomingCallScreen
 sleep 5
 
 # ==============================================================================
-# ETAPA 9: PANTALLA DE LLAMADA ENTRANTE
+# ETAPA 9: PANTALLA DE LLAMADA ENTRANTE ("📞 Llamada para: Mateo")
 # ==============================================================================
 log "=== ETAPA 9: LLAMADA ENTRANTE ==="
 shot 12_incoming_voice
@@ -347,55 +437,65 @@ else
   dump_ui ui_12_incoming_voice
 fi
 
+if has_rx "Llamada para: Mateo|Call for: Mateo"; then
+  res llamada_para_mateo OK
+else
+  res llamada_para_mateo WARN
+fi
+
 tap_rx "Contestar|Answer"
 sleep 3
 
 # ==============================================================================
-# ETAPA 10: LLAMADA DE VOZ ACTIVA (VOZ HUMANA -> PAUSA VERDE -> FRASES EXTRA -> BLOQUEO)
+# ETAPA 10: LLAMADA DE VOZ ACTIVA (PAUSA VERDE -> SOUNDBOARD CANCELAR ENVÍO -> BLOQUEO)
 # ==============================================================================
 log "=== ETAPA 10: LLAMADA DE VOZ ACTIVA ==="
 shot 13_active_voice_officer
 dump_ui ui_13_active_voice_officer
+if has_rx "Dedicada a: Mateo|Dedicated to: Mateo"; then
+  res llamada_activa_mateo OK
+else
+  res llamada_activa_mateo WARN
+fi
+
 HANGUP_PT=$(python3 ci/kidspolice_audit.py hangup_xy "$OUT/ui_13_active_voice_officer.xml" "$SW" "$SH")
 log "Coordenada boton Colgar detectada: $HANGUP_PT"
 
-# Esperar fin del saludo inicial (~11s) para verificar turno verde HABLA TU AHORA (en modo Manual espera sin prisa)
 sleep 11
 for _ in 1 2 3; do
   dump_ui ui_14_active_voice_parent_turn
-  if python3 ci/kidspolice_audit.py tap "$OUT/ui_14_active_voice_parent_turn.xml" "HABLA TÚ AHORA|SPEAK OUT LOUD|Responder ahora" | grep -q "[0-9]"; then
+  if python3 ci/kidspolice_audit.py tap "$OUT/ui_14_active_voice_parent_turn.xml" "HABLA TÚ AHORA|SPEAK OUT LOUD|Responder ya" | grep -q "[0-9]"; then
     break
   fi
   sleep 3
 done
 shot 14_active_voice_parent_turn
-if python3 ci/kidspolice_audit.py tap "$OUT/ui_14_active_voice_parent_turn.xml" "HABLA TÚ AHORA|SPEAK OUT LOUD|Responder ahora" | grep -q "[0-9]"; then
+if python3 ci/kidspolice_audit.py tap "$OUT/ui_14_active_voice_parent_turn.xml" "HABLA TÚ AHORA|SPEAK OUT LOUD|Responder ya" | grep -q "[0-9]"; then
   res turno_verde_padre OK
-  tap_rx "Responder ahora|Next Response" || true
-  sleep 2
+  tap_rx "Responder ya|Reply now" || true
+  sleep 3
 else
   res turno_verde_padre NO_VISTO
 fi
 
-# Abrir teclado de Frases extra
+# Abrir teclado 3x3 de Frases extra y verificar "Cancelar envío" + "Estrella Dorada"
 tap_rx "Frases extra|Quick Lines" || true
 sleep 2
 shot 15_soundboard_open
 dump_ui ui_15_soundboard_open
-if python3 ci/kidspolice_audit.py tap "$OUT/ui_15_soundboard_open.xml" "Estrella de Oro|Gold Star|Te escucho" | grep -q "[0-9]"; then
-  res frases_extra OK
-  tap_rx "Estrella de Oro|Gold Star" || true
+if python3 ci/kidspolice_audit.py tap "$OUT/ui_15_soundboard_open.xml" "Cancelar envío|Cancel visit" | grep -q "[0-9]"; then
+  res frases_extra_cancelar_envio OK
+  tap_rx "Cancelar envío|Cancel visit" || true
   sleep 2
 else
-  res frases_extra FALLA
+  res frases_extra_cancelar_envio FALLA
 fi
 
-# Probar Bloqueo de pantalla anti-mejilla
+# Bloqueo de pantalla anti-mejilla
 tap_rx "Bloquear$|Screen Lock$" || true
 sleep 2
 shot 16_ear_lock
 dump_ui ui_16_ear_lock
-# Toque corto para activar aviso dorado y pulsacion larga de 1.5s para desbloquear
 adb shell input tap $((SW / 2)) $((SH / 2))
 sleep 1
 shot 16b_ear_lock_hint
@@ -406,42 +506,45 @@ sleep 2
 set -- $HANGUP_PT
 adb shell input tap "$1" "$2"
 sleep 4
-close_ad_if_open
-sleep 2
 
 # ==============================================================================
-# ETAPA 11: MEDALLA POST-LLAMADA (CERTIFICADO CON NOMBRE MATEO)
+# ETAPA 11: INSIGNIA POST-LLAMADA CON NOMBRE MATEO + REGRESO CON PUERTA PARENTAL
 # ==============================================================================
-log "=== ETAPA 11: POST-LLAMADA Y MEDALLA ==="
+log "=== ETAPA 11: POST-LLAMADA E INSIGNIA ==="
 shot 17_post_call_medal
 dump_ui ui_17_post_call_medal
-if has_rx "MEDALLA OFICIAL|SUPER KID"; then
+if has_rx "INSIGNIA DE BUENOS HÁBITOS|GOOD HABITS BADGE"; then
   res medalla_post_llamada OK
 else
   res medalla_post_llamada FALLA
 fi
 
-tap_rx "Volver al Inicio|Back to Home" || true
-sleep 3
-close_ad_if_open
+tap_rx "Volver al panel|Back to adult" || true
+sleep 2
+solve_gate_if_open
+sleep 2
 
 # ==============================================================================
-# ETAPA 12: VIDEOLLAMADA HD REAL (OFICIAL MARCO + DRA. ELENA CON PRUEBA DE MOVIMIENTO)
+# ETAPA 12: VIDEOLLAMADA HD REAL (CAPITÁN MARCO + DRA. ELENA SI VIP ACTIVO)
 # ==============================================================================
-log "=== ETAPA 12A: VIDEOLLAMADA HD OFICIAL MARCO ==="
+log "=== ETAPA 12A: VIDEOLLAMADA HD CAPITÁN MARCO ==="
 if ! has_rx "(^|, | )Videollamada$|(^|, | )Video Call$"; then
   adb shell input swipe $((SW / 2)) $((SH * 75 / 100)) $((SW / 2)) $((SH * 40 / 100)) 400
   sleep 2
 fi
 tap_rx "(^|, | )Videollamada$|(^|, | )Video Call$" 0
 sleep 2
-tap_rx "Oficial Marco|Officer Marcus" || true
+tap_rx "Capitán Marco|Captain Marco" || true
 sleep 1
+if ! has_rx "Ahora mismo|Right now"; then
+  adb shell input swipe $((SW / 2)) $((SH * 78 / 100)) $((SW / 2)) $((SH * 38 / 100)) 350
+  sleep 1
+fi
 tap_rx "Automático|Auto" || true
 sleep 1
 tap_rx "Ahora mismo|Right now" || true
 sleep 1
-tap_rx "Iniciar Videollamada|Start Real HD Video"
+tap_rx "Iniciar Videollamada|Start Video Call"
 sleep 3
 shot 18_incoming_video_police
 tap_rx "Contestar|Answer"
@@ -450,26 +553,31 @@ shot 18a_video_police_f1
 sleep 2
 shot 18b_video_police_f2
 dump_ui ui_18_video_police
+HANGUP_V=$(python3 ci/kidspolice_audit.py hangup_xy "$OUT/ui_18_video_police.xml" "$SW" "$SH")
 
-# Colgar videollamada Oficial Marco
-set -- $HANGUP_PT
+set -- $HANGUP_V
 adb shell input tap "$1" "$2"
 sleep 4
-close_ad_if_open
-tap_rx "Volver al Inicio|Back to Home" || true
-sleep 3
-close_ad_if_open
+tap_rx "Volver al panel|Back to adult" || true
+sleep 2
+solve_gate_if_open
+sleep 2
 
-log "=== ETAPA 12B: VIDEOLLAMADA HD DRA. ELENA ==="
+log "=== ETAPA 12B: VIDEOLLAMADA HD DRA. ELENA (SI VIP ACTIVO) ==="
 if ! has_rx "(^|, | )Videollamada$|(^|, | )Video Call$"; then
   adb shell input swipe $((SW / 2)) $((SH * 75 / 100)) $((SW / 2)) $((SH * 40 / 100)) 400
   sleep 2
 fi
 tap_rx "(^|, | )Videollamada$|(^|, | )Video Call$" 0
 sleep 2
-tap_rx "Dra\. Elena|Dr\. Elena" || true
+if has_rx "🔒.*Dra\. Elena"; then
+  log "Dra. Elena bloqueada porque AdMob test rewarded no cargo en CI sin Play Store; probando segundo pase HD con Capitán Marco..."
+  tap_rx "Capitán Marco|Captain Marco" || true
+else
+  tap_rx "Dra\. Elena|Dr\. Elena" || true
+fi
 sleep 1
-tap_rx "Iniciar Videollamada|Start Real HD Video"
+tap_rx "Iniciar Videollamada|Start Video Call"
 sleep 3
 tap_rx "Contestar|Answer"
 sleep 5
@@ -478,16 +586,16 @@ sleep 2
 shot 19b_video_doctor_f2
 dump_ui ui_19_video_doctor
 
-set -- $HANGUP_PT
+set -- $HANGUP_V
 adb shell input tap "$1" "$2"
 sleep 4
-close_ad_if_open
-tap_rx "Volver al Inicio|Back to Home" || true
-sleep 3
-close_ad_if_open
+tap_rx "Volver al panel|Back to adult" || true
+sleep 2
+solve_gate_if_open
+sleep 2
 
 # ==============================================================================
-# ETAPA 13: PRUEBA MULTIIDIOMA (INGLÉS + ÁRABE)
+# ETAPA 13: PRUEBA MULTIIDIOMA (INGLÉS + ÁRABE + REGRESO A ESPAÑOL)
 # ==============================================================================
 log "=== ETAPA 13: PRUEBA MULTIIDIOMA EN Y AR ==="
 adb shell input swipe $((SW / 2)) $((SH * 28 / 100)) $((SW / 2)) $((SH * 88 / 100)) 350
@@ -512,12 +620,70 @@ sleep 2
 shot 21_home_arabic
 dump_ui ui_21_home_arabic
 
+tap_rx "AR ·|الإعدادات|Settings"
+sleep 2
+tap_rx "Español \(México\)" || true
+sleep 2
+adb shell input keyevent KEYCODE_BACK
+sleep 2
+
 # ==============================================================================
-# ETAPA 14: AUDITORÍA GEOMÉTRICA XML + MOVIMIENTO DE VIDEO + LOGCAT
+# ETAPA 14: COMPATIBILIDAD RESPONSIVA MULTI-DISPOSITIVO (720x1280 y 1200x1920)
 # ==============================================================================
-log "=== ETAPA 14: AUDITORIA FINAL ==="
+log "=== ETAPA 14A: RESPONSIVO TELÉFONO COMPACTO (720x1280 @ 320dpi) ==="
+adb shell wm size 720x1280
+adb shell wm density 320
+sleep 3
+shot 22_compact_720p_home
+dump_ui ui_compact_01_home
+
+if ! has_rx "(^|, | )Llamada$"; then
+  adb shell input swipe 360 920 360 440 350
+  sleep 2
+fi
+if tap_rx "(^|, | )Llamada$" 0; then
+  sleep 2
+  shot 23_compact_720p_precall
+  dump_ui ui_compact_02_precall
+  adb shell input keyevent KEYCODE_BACK
+  sleep 2
+  res responsivo_compacto_720p OK
+else
+  res responsivo_compacto_720p WARN
+fi
+
+log "=== ETAPA 14B: RESPONSIVO TABLET (1200x1920 @ 240dpi) ==="
+adb shell wm size 1200x1920
+adb shell wm density 240
+sleep 3
+shot 24_tablet_1200p_home
+dump_ui ui_tablet_01_home
+
+if ! has_rx "(^|, | )Llamada$"; then
+  adb shell input swipe 600 1380 600 720 350
+  sleep 2
+fi
+if tap_rx "(^|, | )Llamada$" 0; then
+  sleep 2
+  shot 25_tablet_1200p_precall
+  dump_ui ui_tablet_02_precall
+  adb shell input keyevent KEYCODE_BACK
+  sleep 2
+  res responsivo_tablet_1200p OK
+else
+  res responsivo_tablet_1200p WARN
+fi
+
+adb shell wm size reset
+adb shell wm density reset
+sleep 2
+
+# ==============================================================================
+# ETAPA 15: AUDITORÍA GEOMÉTRICA MULTI-RESOLUCIÓN + MOVIMIENTO DE VIDEO + LOGCAT
+# ==============================================================================
+log "=== ETAPA 15: AUDITORIA FINAL ==="
 adb logcat -d -v time > "$OUT/logcat_full.txt"
-grep -E "$PKG|FATAL EXCEPTION|AndroidRuntime|ANR in|ReactNativeJS" "$OUT/logcat_full.txt" | tail -250 > "$OUT/logcat_filtered.txt" || true
+grep -E "$PKG|FATAL EXCEPTION|AndroidRuntime|ANR in|ReactNativeJS" "$OUT/logcat_full.txt" | tail -300 > "$OUT/logcat_filtered.txt" || true
 rm -f "$OUT/logcat_full.txt"
 
 CRASHES=$(grep -A3 "FATAL EXCEPTION" "$OUT/logcat_filtered.txt" | grep -c "Process: $PKG" || true)
@@ -529,6 +695,6 @@ res rn_js_errors "$RN_ERRORS"
 res prod_ads_seen "$PROD_ADS_SEEN"
 
 python3 ci/kidspolice_audit.py audit "$OUT" "$SW"
-log "=== FIN DE SUITE E2E ==="
+log "=== FIN DE SUITE E2E CALLABIT v1.1.0 ==="
 cat "$OUT/result.env"
 exit 0

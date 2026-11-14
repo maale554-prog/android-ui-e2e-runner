@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Herramienta E2E y auditor geometrico para Kids Police en Android Emulator:
+"""Herramienta E2E y auditor geometrico multi-resolucion para Callabit (com.superappsmx.kidspolice):
 Subcomandos:
-  tap <xml> <regex>              -> imprime "cx cy label" del primer nodo coincidente
-  tap_nth <xml> <regex> <idx>    -> imprime "cx cy label" del idx-esimo nodo coincidente (0-based)
-  hangup_xy <xml>                -> imprime "cx cy" del boton rojo de colgar en ActiveCallScreen
-  audit <results_dir> <screen_w> -> audita centrado horizontal en todos los ui_*.xml,
-                                    verifica movimiento real de pixeles entre frames de videollamada,
-                                    y genera audit_report.json + audit_report.md
+  tap <xml> <regex>                -> imprime "cx cy label" del primer nodo coincidente
+  tap_nth <xml> <regex> <idx>      -> imprime "cx cy label" del idx-esimo nodo coincidente (0-based)
+  solve_gate <xml>                 -> resuelve reto matematico "A × B ?" de ParentalGateModal e imprime
+                                      "answer edit_cx edit_cy btn_cx btn_cy"
+  hangup_xy <xml> <sw> <sh>        -> imprime "cx cy" del boton rojo de colgar en ActiveCallScreen
+  audit <results_dir> <default_sw> -> audita centrado horizontal en todos los ui_*.xml
+                                      (1080p estandar, 720p compacto y 1200p tablet),
+                                      verifica movimiento real de pixeles entre frames de videollamada,
+                                      y genera audit_report.json + audit_report.md
 """
 import glob
 import json
@@ -70,23 +73,52 @@ def cmd_tap(xml_path: str, pattern: str, nth: int = 0):
     matches = clickable_matches if clickable_matches else other_matches
     if len(matches) > nth:
         m = matches[nth]
-        lbl = re.sub(r"\s+", "_", m["combined"])[:42]
+        lbl = re.sub(r"\s+", "_", m["combined"])[:48]
         print(f"{m['cx']} {m['cy']} {lbl}")
 
 
+def cmd_solve_gate(xml_path: str):
+    nodes = list(iter_nodes(xml_path))
+    if not nodes:
+        return
+    rx_math = re.compile(r"(\d{1,3})\s*[×x*]\s*(\d{1,3})")
+    rx_confirm = re.compile(r"^(Continuar|Continue|Weiter|Continuer|متابعة)$", re.I)
+
+    ans = None
+    edit_node = None
+    btn_node = None
+
+    for n in nodes:
+        if ans is None and n["combined"]:
+            m = rx_math.search(n["combined"])
+            if m:
+                ans = int(m.group(1)) * int(m.group(2))
+        if edit_node is None and "EditText" in n["class"]:
+            edit_node = n
+        if btn_node is None and (
+            rx_confirm.search(n["text"]) or rx_confirm.search(n["desc"]) or rx_confirm.search(n["combined"])
+        ):
+            btn_node = n
+
+    if ans is not None and edit_node is not None:
+        bx = btn_node["cx"] if btn_node else edit_node["cx"]
+        by = btn_node["cy"] if btn_node else (edit_node["cy"] + 160)
+        print(f"{ans} {edit_node['cx']} {edit_node['cy']} {bx} {by}")
+
+
 def cmd_hangup_xy(xml_path: str, screen_w: int = 1080, screen_h: int = 2400):
-    # Busca el boton clickable mas a la derecha en la barra inferior de controles
+    min_dim = max(48, int(screen_w * 0.06))
+    max_dim = max(260, int(screen_w * 0.28))
     candidates = []
     for n in iter_nodes(xml_path):
-        x1, y1, x2, y2 = n["bounds"]
-        if n["clickable"] and y1 > int(screen_h * 0.78) and x1 > int(screen_w * 0.72):
-            if 80 <= n["w"] <= 240 and 80 <= n["h"] <= 240:
+        x1, y1, _, _ = n["bounds"]
+        if n["clickable"] and y1 > int(screen_h * 0.76) and x1 > int(screen_w * 0.70):
+            if min_dim <= n["w"] <= max_dim and min_dim <= n["h"] <= max_dim:
                 candidates.append(n)
     if candidates:
         c = sorted(candidates, key=lambda item: item["cx"], reverse=True)[0]
         print(f"{c['cx']} {c['cy']}")
     else:
-        # Coordenada de respaldo en barra inferior derecha (1080x2400)
         print(f"{int(screen_w * 0.885)} {int(screen_h * 0.915)}")
 
 
@@ -101,14 +133,12 @@ def check_video_motion(img1_path: str, img2_path: str):
     im1 = Image.open(img1_path).convert("RGB")
     im2 = Image.open(img2_path).convert("RGB")
     w, h = im1.size
-    # Zona central del rostro/torso del personaje (evita el reloj arriba y subtitulos abajo)
     crop_box = (int(w * 0.20), int(h * 0.18), int(w * 0.80), int(h * 0.56))
     c1 = im1.crop(crop_box)
     c2 = im2.crop(crop_box)
     diff = ImageChops.difference(c1, c2)
     stat = ImageStat.Stat(diff)
     mean_diff = sum(stat.mean) / 3.0
-    # Tambien verificar que no sea pantalla negra (brillo medio > 25)
     bright = sum(ImageStat.Stat(c1).mean) / 3.0
     return {
         "checked": True,
@@ -118,35 +148,68 @@ def check_video_motion(img1_path: str, img2_path: str):
     }
 
 
-def cmd_audit(results_dir: str, screen_w: int):
-    target_cx = screen_w / 2.0
-    tolerance_px = max(28, int(screen_w * 0.035))  # ~37px en 1080p (3.5%)
+def resolve_viewport_width(base_name: str, default_sw: int) -> tuple[str, int]:
+    if base_name.startswith("ui_compact_"):
+        return "compact_720x1280", 720
+    if base_name.startswith("ui_tablet_"):
+        return "tablet_1200x1920", 1200
+    return f"standard_{default_sw}p", default_sw
+
+
+def cmd_audit(results_dir: str, default_sw: int):
     xml_files = sorted(glob.glob(os.path.join(results_dir, "ui_*.xml")))
+    skip_exact = {
+        "ui_t.xml",
+        "ui_h.xml",
+        "ui_anr.xml",
+        "ui_ad.xml",
+        "ui_dlg.xml",
+        "ui_gate_tmp.xml",
+        "ui_gate_tmp2.xml",
+    }
 
     off_center_items = []
     checked_text_nodes = 0
+    viewport_stats: dict[str, dict[str, int]] = {}
 
     for xf in xml_files:
         base = os.path.basename(xf)
-        if base in ("ui_t.xml", "ui_h.xml", "ui_anr.xml", "ui_ad.xml", "ui_dlg.xml"):
+        if base in skip_exact or base.startswith("ui_tmp_"):
             continue
+        vp_key, vw = resolve_viewport_width(base, default_sw)
+        target_cx = vw / 2.0
+        tolerance_px = max(26, int(vw * 0.035))
+        vp_bucket = viewport_stats.setdefault(vp_key, {"files": 0, "checked_nodes": 0, "off_center": 0})
+        vp_bucket["files"] += 1
+
         nodes = list(iter_nodes(xf))
+        switches = [s for s in nodes if "Switch" in s["class"] or "CheckBox" in s["class"]]
+
         for n in nodes:
             label = n["text"] or n["desc"]
             if not label:
                 continue
             if not n["pkg"].startswith("com.superappsmx.kidspolice"):
                 continue
-            # Ignorar textos que pertenecen a grillas multicolumna (ancho < 46% de pantalla, como chips, 3 tarjetas de heroes, 2 botones Lado a Lado, teclado 3x3 o barra de 5 controles)
-            if n["w"] < int(screen_w * 0.48):
+            if "Switch" in n["class"] or "EditText" in n["class"]:
                 continue
+            # Ignorar textos en filas con Switch lateral (p. ej. Recordatorio 24h [Texto | Switch])
+            if any(abs(n["cy"] - sw["cy"]) < 85 for sw in switches):
+                continue
+            # Ignorar textos que pertenecen a grillas multicolumna (ancho < 48% del viewport)
+            if n["w"] < int(vw * 0.48):
+                continue
+
             checked_text_nodes += 1
+            vp_bucket["checked_nodes"] += 1
             delta = abs(n["cx"] - target_cx)
             if delta > tolerance_px:
+                vp_bucket["off_center"] += 1
                 off_center_items.append(
                     {
                         "file": base,
-                        "text": (n["text"] or n["desc"])[:65],
+                        "viewport": vp_key,
+                        "text": label[:65],
                         "bounds": n["bounds"],
                         "cx": n["cx"],
                         "expected_cx": target_cx,
@@ -164,10 +227,9 @@ def cmd_audit(results_dir: str, screen_w: int):
     )
 
     report = {
-        "screen_width": screen_w,
-        "expected_center_x": target_cx,
-        "tolerance_px": tolerance_px,
+        "default_screen_width": default_sw,
         "checked_fullwidth_text_nodes": checked_text_nodes,
+        "viewport_breakdown": viewport_stats,
         "off_center_count": len(off_center_items),
         "off_center_items": off_center_items,
         "video_police_motion": vid_police,
@@ -179,11 +241,11 @@ def cmd_audit(results_dir: str, screen_w: int):
         json.dump(report, f, indent=2, ensure_ascii=False)
 
     md_lines = [
-        "# Kids Police — Reporte E2E y Auditoría Geométrica de Centrado",
-        f"- Ancho de pantalla: `{screen_w}px` (centro esperado `X = {target_cx}px`, tolerancia `±{tolerance_px}px`)",
-        f"- Nodos de texto principales auditados en XML: `{checked_text_nodes}`",
+        "# Callabit v1.1.0 — Reporte E2E Multi-Dispositivo y Auditoría Geométrica",
+        f"- Total nodos de texto principales auditados en XML: `{checked_text_nodes}`",
+        f"- Desglose por resolución (Estándar / Compacto 720p / Tablet 1200p): `{json.dumps(viewport_stats, ensure_ascii=False)}`",
         f"- Textos descentrados detectados: `{len(off_center_items)}`",
-        f"- Videollamada Oficial Marco (movimiento real de fotogramas): `{vid_police}`",
+        f"- Videollamada Capitán Marco (movimiento real de fotogramas): `{vid_police}`",
         f"- Videollamada Dra. Elena (movimiento real de fotogramas): `{vid_doctor}`",
         "",
     ]
@@ -191,10 +253,10 @@ def cmd_audit(results_dir: str, screen_w: int):
         md_lines.append("## Elementos fuera de centro detectados")
         for it in off_center_items:
             md_lines.append(
-                f"- `{it['file']}`: **{it['text']}** -> `cx={it['cx']}` (desviación `{it['delta_px']}px`, bounds `{it['bounds']}`)"
+                f"- `{it['file']}` ({it['viewport']}): **{it['text']}** -> `cx={it['cx']}` (esperado `{it['expected_cx']}`, desviación `{it['delta_px']}px`, bounds `{it['bounds']}`)"
             )
     else:
-        md_lines.append("## Centrado Horizontal: 100% APROBADO (0 desviaciones)")
+        md_lines.append("## Centrado Horizontal Multi-Resolución: 100% APROBADO (0 desviaciones)")
 
     with open(os.path.join(results_dir, "audit_report.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(md_lines) + "\n")
@@ -208,6 +270,8 @@ if __name__ == "__main__":
         cmd_tap(sys.argv[2], sys.argv[3], 0)
     elif cmd == "tap_nth":
         cmd_tap(sys.argv[2], sys.argv[3], int(sys.argv[4]))
+    elif cmd == "solve_gate":
+        cmd_solve_gate(sys.argv[2])
     elif cmd == "hangup_xy":
         cmd_hangup_xy(
             sys.argv[2],
